@@ -1,0 +1,108 @@
+{
+  "overall": {
+    "precision": 0.329,
+    "recall": 0.205,
+    "f1": 0.252,
+    "matched": 27,
+    "total_predictions": 82,
+    "total_ground_truth": 132
+  },
+  "by_category_recall": {
+    "bug": {
+      "recall": 0.111,
+      "caught": 2,
+      "total": 18
+    },
+    "build-config": {
+      "recall": 0.0,
+      "caught": 0,
+      "total": 4
+    },
+    "cleanup": {
+      "recall": 0.111,
+      "caught": 1,
+      "total": 9
+    },
+    "design": {
+      "recall": 0.304,
+      "caught": 7,
+      "total": 23
+    },
+    "documentation": {
+      "recall": 0.5,
+      "caught": 1,
+      "total": 2
+    },
+    "other": {
+      "recall": 0.0,
+      "caught": 0,
+      "total": 3
+    },
+    "performance": {
+      "recall": 1.0,
+      "caught": 1,
+      "total": 1
+    },
+    "security": {
+      "recall": 0.176,
+      "caught": 3,
+      "total": 17
+    },
+    "style": {
+      "recall": 0.133,
+      "caught": 4,
+      "total": 30
+    },
+    "test-coverage": {
+      "recall": 0.25,
+      "caught": 5,
+      "total": 20
+    },
+    "type-safety": {
+      "recall": 0.6,
+      "caught": 3,
+      "total": 5
+    }
+  },
+  "by_group_recall": {
+    "objective": {
+      "recall": 0.215,
+      "caught": 14,
+      "total": 65
+    },
+    "subjective": {
+      "recall": 0.194,
+      "caught": 13,
+      "total": 67
+    }
+  },
+  "by_layer_precision": {
+    "llm": {
+      "precision": 0.325,
+      "matched": 25,
+      "total": 77
+    },
+    "static": {
+      "precision": 0.4,
+      "matched": 2,
+      "total": 5
+    }
+  },
+  "line_tolerance": 15,
+  "prs_evaluated": 62,
+  "objective_categories": [
+    "bug",
+    "build-config",
+    "performance",
+    "security",
+    "test-coverage",
+    "type-safety"
+  ],
+  "subjective_categories": [
+    "cleanup",
+    "design",
+    "documentation",
+    "other",
+    "style"
+  ]
+}

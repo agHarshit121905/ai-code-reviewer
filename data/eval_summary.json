@@ -1,0 +1,29 @@
+{
+  "total_prs": 62,
+  "total_distinct_issues": 132,
+  "avg_issues_per_pr": 2.13,
+  "issues_by_category": {
+    "style": 30,
+    "design": 23,
+    "test-coverage": 20,
+    "bug": 18,
+    "security": 17,
+    "cleanup": 9,
+    "type-safety": 5,
+    "build-config": 4,
+    "other": 3,
+    "documentation": 2,
+    "performance": 1
+  },
+  "issues_by_repo": {
+    "psf/requests": 9,
+    "django/django": 41,
+    "nlohmann/json": 38,
+    "fmtlib/fmt": 40,
+    "grpc/grpc": 4
+  },
+  "raw_comments_total": 425,
+  "dropped_as_noise": 16,
+  "dropped_as_duplicate_thread_reply": 160,
+  "dropped_as_non_code_file": 117
+}
