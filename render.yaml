@@ -1,0 +1,23 @@
+# Render deployment config for the AI Code Reviewer API
+# https://render.com/docs/blueprint-spec
+#
+# To deploy:
+#   1. Push this repo to GitHub (already done)
+#   2. On render.com: New > Blueprint > connect this repo
+#   3. Render reads this file and provisions the service automatically
+#   4. Add GROQ_API_KEY (and optionally GITHUB_TOKEN) as environment
+#      variables in the Render dashboard under the service's Environment tab
+#      — do NOT commit secrets to the repo
+
+services:
+  - type: web
+    name: ai-code-reviewer
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false   # set manually in dashboard, never committed
+      - key: GITHUB_TOKEN
+        sync: false   # optional — raises GitHub API rate limit for /review/github
