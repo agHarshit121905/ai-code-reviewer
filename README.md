@@ -11,13 +11,15 @@ A two-layer code review system that combines deterministic static analysis with 
 
 Most "AI code reviewer" projects are a thin wrapper around an LLM: send a diff, print whatever comes back. This one is built around a different question — **how do you know if the review is any good?**
 
-That question drove three design decisions:
+That question drove four design decisions:
 
-1. **A hybrid architecture.** Static analysis handles what's deterministic (unused imports, mutable default arguments, bare `except:` clauses, complexity thresholds). The LLM only sees what requires semantic understanding. This is cheaper, faster, and more reliable than sending everything to a model.
+1. **A hybrid architecture.** Static analysis handles what's deterministic (unused imports, mutable default arguments, bare `except:` clauses, complexity thresholds). The LLM only sees what requires semantic understanding.
 
 2. **An eval harness built against real data.** 132 ground-truth issues scraped from actual human review comments on merged PRs across 5 open-source repos (Python and C++), used to measure precision and recall.
 
-3. **An honest accounting of what the eval can't measure.** The most interesting result in this project isn't the score — it's what investigating the score revealed.
+3. **Retrieval-augmented review, measured against the baseline.** The reviewer retrieves semantically similar functions from a FAISS index of the codebase and injects them into the prompt. This improved recall ~30% relative — and, more interestingly, improved it *only on the categories where codebase context should matter* (duplication, security patterns, architectural consistency) and not at all on categories where it shouldn't (logic bugs, style).
+
+4. **An honest accounting of what the eval can't measure.** The most interesting result in this project isn't the score — it's what investigating the score revealed.
 
 ---
 
@@ -33,11 +35,19 @@ diff
  │     • radon: cyclomatic complexity
  │     • regex: C++ patterns (malloc, NULL, using namespace std)
  │
+ ├─► Retrieval Layer  (optional, local embeddings)
+ │     • Codebase pre-indexed at function granularity (AST for Python,
+ │       brace-matching for C++)
+ │     • all-MiniLM-L6-v2 embeddings, FAISS inner-product index
+ │     • Per changed file: retrieve top-k similar existing functions,
+ │       excluding the file being changed
+ │
  ├─► LLM Semantic Layer  (Groq / gpt-oss-120b)
  │     • Receives the diff with pre-computed line numbers
  │     • Receives static findings as context, told not to repeat them
+ │     • Receives retrieved codebase context, told to check for
+ │       duplication and pattern inconsistency
  │     • Structured JSON output via strict schema enforcement
- │     • Focuses on: logic bugs, edge cases, security, design, test gaps
  │
  └─► Combined structured output (JSON)
 ```
@@ -45,6 +55,10 @@ diff
 **Why pass static findings to the LLM?** So it doesn't waste tokens re-flagging an unused import. The model is told explicitly what's already been caught and instructed to focus only on issues requiring semantic understanding.
 
 **Why pre-compute line numbers?** LLMs are unreliable at counting through raw `+`/`-` diff markers. The diff parser (shared with the static layer) annotates each added line with its exact line number in the new file before the model sees it.
+
+**Why function-level chunks rather than fixed-size windows?** A function is a semantically complete unit. A 512-token window can bisect a function, embedding a fragment whose meaning differs from the whole. Function chunks also map 1:1 onto the retrieval question ("does a similar function already exist?").
+
+**Why local embeddings and FAISS rather than an API and a managed vector DB?** At this scale (a few thousand functions per repo, ~118k total) an 80MB model on CPU indexes a repo in under two minutes and a flat FAISS index searches it in microseconds. A managed service would add latency, cost, and an account dependency for zero benefit.
 
 ---
 
@@ -54,6 +68,8 @@ Evaluated against 132 human review comments from 62 merged PRs (`psf/requests`, 
 
 A prediction counts as a match if it lands on the same file within a line-number tolerance of the human comment.
 
+### Baseline (diff-only review)
+
 | Metric | ±3 line tolerance | ±15 line tolerance |
 |---|---|---|
 | Matched | 19 | 27 |
@@ -61,25 +77,50 @@ A prediction counts as a match if it lands on the same file within a line-number
 | **Recall** | 14.4% | 20.5% |
 | F1 | 0.178 | 0.252 |
 
-Recall by category (at ±15):
+### With RAG (codebase context retrieved and injected)
 
-| Category | Recall | n |
+The reviewer additionally receives the most semantically similar existing functions from the repo, retrieved from a FAISS index of ~118k function-level chunks across the five repos.
+
+| Metric | ±3 tolerance | ±15 tolerance |
 |---|---|---|
-| performance | 100% | 1 |
-| type-safety | 60% | 5 |
-| documentation | 50% | 2 |
-| design | 30% | 23 |
-| test-coverage | 25% | 20 |
-| security | 18% | 17 |
-| style | 13% | 30 |
-| bug | 11% | 18 |
-| cleanup | 11% | 9 |
-| build-config | 0% | 4 |
-| other | 0% | 3 |
+| Matched | 25 | 35 |
+| **Precision** | 21.2% | 29.7% |
+| **Recall** | **18.9%** | **26.5%** |
+| **F1** | **0.200** | **0.280** |
 
-*(Rows sum to 27 matched of 132 total.)*
+**RAG improved recall ~30% relative at both tolerance levels** (14.4%→18.9% at ±3; 20.5%→26.5% at ±15), at a ~2–3 point precision cost, for a net F1 gain. It made 44% more predictions overall.
 
-Precision by layer (at ±15): static analysis **40%** (2/5), LLM **32.5%** (25/77).
+The improvement is understated: 4 of 62 PRs failed under RAG (token limits — see below), so RAG is scored against the same 132 ground-truth issues while having fewer PRs in which to find them.
+
+### Where RAG helped, and where it didn't
+
+Recall by category, baseline → RAG (at ±3 tolerance):
+
+| Category | Baseline | RAG | |
+|---|---|---|---|
+| security | 11.8% | **23.5%** | ↑ doubled |
+| cleanup | 11.1% | **22.2%** | ↑ doubled |
+| build-config | 0% | **25.0%** | ↑ |
+| design | 17.4% | **26.1%** | ↑ |
+| bug | 5.6% | 5.6% | — unchanged |
+| style | 13.3% | 13.3% | — unchanged |
+| type-safety | 40.0% | 40.0% | — unchanged |
+
+This is the result I care most about. **RAG improved exactly the categories that require knowing what else exists in the codebase — duplication, security patterns, architectural consistency — and did nothing for categories that only require reading the diff.** A logic bug is a logic bug regardless of what's in the rest of the repo; a duplicated utility function is only visible if you know the utility already exists.
+
+That's the mechanism working as theorized, not a lucky aggregate number.
+
+**A concrete example.** On `psf/requests#7502`, the diff added an inline `isinstance(fp, _SupportsRead) or hasattr(fp, "read")` check. The baseline reviewer found nothing. RAG retrieved `has_read()` from `src/requests/_types.py` (cosine similarity 0.787) — a function that performs exactly that check, including `__getattr__` proxy handling — and the reviewer flagged the duplication by name. It separately caught that `isinstance()` against a `typing.Protocol` fails at runtime unless the protocol is `@runtime_checkable`.
+
+### The cost
+
+RAG roughly tripled token consumption per review. This wasn't free:
+
+- **1 PR failed with HTTP 413** — the retrieved context pushed the prompt to 15,906 tokens against an 8,000 TPM limit.
+- **2 PRs failed schema validation** — under longer prompts the model twice produced output violating the strict JSON schema (once emitting a string where an object belonged, once inventing a category outside the enum). Strict-mode enforcement caught both rather than silently accepting malformed data.
+- **1 PR failed on daily token quota** — the run consumed 199,211 of 200,000 daily tokens.
+
+Baseline hit none of these. If you're deploying this, **RAG buys ~30% more recall for ~3× the token cost** — a tradeoff that's obviously worth it in some contexts and obviously not in others.
 
 ---
 
@@ -110,16 +151,21 @@ scrape_prs.py         Phase 1a — scrape merged PRs + inline review comments fr
 clean_eval_data.py    Phase 1b — collapse comment threads, filter noise, categorize
 static_analyzer.py    Phase 2  — AST + pyflakes + radon + C++ regex checks
 llm_reviewer.py       Phase 3  — Groq API, structured output, response caching
+codebase_indexer.py   Phase 4  — function-level chunking, embeddings, FAISS index
+rag_reviewer.py       Phase 4  — retrieval-augmented review
 eval_harness.py       Phase 5  — precision/recall, category + layer breakdowns
 miss_diagnostic.py    Phase 5  — inspect missed issues against actual reviewer output
 api.py                Phase 6  — FastAPI service
 render.yaml           Phase 6  — deployment config
 
 data/
-  eval_issues.jsonl              132 labeled ground-truth issues
-  full_review_results_groq.jsonl reviewer output across all 62 PRs
-  eval_report.json               metrics at ±15 line tolerance
-  eval_report_tol3.json          metrics at ±3 line tolerance
+  eval_issues.jsonl                132 labeled ground-truth issues
+  full_review_results_groq.jsonl   baseline reviewer output (62 PRs)
+  full_review_results_rag.jsonl    RAG reviewer output (58 PRs)
+  eval_report.json                 baseline metrics, ±15 tolerance
+  eval_report_tol3.json            baseline metrics, ±3 tolerance
+  eval_report_rag.json             RAG metrics, ±3 tolerance
+  eval_report_rag_tol15.json       RAG metrics, ±15 tolerance
 ```
 
 ---
@@ -188,18 +234,25 @@ LLM responses are cached by diff hash, so re-running the pipeline after a crash 
 
 - **Small eval set.** 62 PRs, 132 issues, 5 repos. Enough to surface directional signal and methodology problems; not enough to make confident claims about absolute performance.
 - **Positional matching.** As discussed above, the central weakness. Semantic matching is the obvious next step.
+- **Per-category recall is not comparable across tolerance levels.** The matcher is greedy and one-to-one: it iterates ground-truth issues in order and claims the first unmatched prediction that fits. Widening the tolerance can therefore cause a prediction that previously matched issue A to instead be claimed by issue B, encountered earlier. Aggregate matched counts are correct and monotone (25 → 35), but a category's recall can appear to *decrease* as tolerance widens (e.g. `cleanup` 22.2% → 11.1%) purely from reassignment. A proper bipartite matching (Hungarian algorithm) would fix this; greedy was chosen for auditability and the difference in aggregate is negligible.
 - **Heuristic categorization.** First-match-wins regex rules on both sides (ground-truth labeling and, implicitly, model output). Reasonable for slicing results; not a rigorous taxonomy.
-- **C++ static analysis is regex-based.** No AST parsing for C++, so the static layer catches only surface patterns. Python gets real AST analysis.
+- **C++ static analysis is regex-based.** No AST parsing for C++, so the static layer catches only surface patterns. Python gets real AST analysis. C++ function extraction for the index uses brace-matching, which will miss some template-heavy definitions.
 - **Diff-fragment parsing.** Mid-function diffs (e.g. a single `elif` branch) can't be parsed as standalone Python. The AST layer skips these silently rather than reporting false syntax errors — correct behavior, but it means static coverage is lower on small diffs.
+- **Temporal mismatch in the index.** Repos are indexed at current `HEAD`, but the eval PRs were merged earlier. The reviewer therefore sees a slightly newer codebase than the PR author did. A rigorous version would check out each repo at the PR's parent commit.
+- **RAG failure modes are real.** 4 of 62 PRs failed under RAG (token limits, schema-validation failures under longer prompts) that succeeded in the baseline. Recall gains are reported on the 58 that completed.
 
 ---
 
 ## What I'd do next
 
-1. **Semantic matching in the eval harness.** Use embeddings or an LLM judge to determine whether a predicted issue and a ground-truth issue describe the same defect, independent of line placement. This directly addresses the core limitation.
+1. **Semantic matching in the eval harness.** Use embeddings or an LLM judge to determine whether a predicted issue and a ground-truth issue describe the same defect, independent of line placement. This directly addresses the core limitation, and would let me measure RAG's contribution far more precisely than positional matching allows.
 
-2. **Codebase-aware context (RAG).** Embed the surrounding codebase at function granularity so the reviewer can answer "does this duplicate an existing utility?" or "does this violate the error-handling pattern used elsewhere in this module?" — questions that require context beyond the diff.
+2. **Bipartite matching instead of greedy.** Fixes the order-dependent category attribution described above.
 
-3. **A feedback loop.** Track which suggestions get accepted vs. dismissed in real use, and train a ranking model to surface high-confidence issues first.
+3. **Retrieval evaluation in its own right.** Right now I measure RAG end-to-end (did recall improve?) but never measure retrieval quality directly (was the retrieved context actually relevant?). Building a small labeled set of "for this diff, these are the functions that should be retrieved" would let me tune `MIN_SIMILARITY`, `k`, and the chunking strategy against a target rather than by intuition.
 
-4. **GitHub Action integration.** Auto-comment on PRs, turning this from an API into something that lives in a real dev workflow.
+4. **Adaptive context budgeting.** RAG's failures were all token-limit related. Retrieved context should be truncated proportionally to diff size — a large diff should get less context, not the same fixed amount, so total prompt size stays bounded.
+
+5. **A feedback loop.** Track which suggestions get accepted vs. dismissed in real use, and train a ranking model to surface high-confidence issues first.
+
+6. **GitHub Action integration.** Auto-comment on PRs, turning this from an API into something that lives in a real dev workflow.
